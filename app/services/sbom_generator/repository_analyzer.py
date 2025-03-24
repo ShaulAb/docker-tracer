@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -67,6 +68,13 @@ class RepositoryAnalyzer:
             # Analyze each file
             all_dependencies = []
             errors = []
+            
+            # Get Python environment info first
+            try:
+                python_info = self._get_python_environment()
+                all_dependencies.extend(python_info)
+            except Exception as e:
+                errors.append(f"Error getting Python environment: {str(e)}")
             
             for pkg_file in package_files:
                 try:
@@ -225,6 +233,51 @@ class RepositoryAnalyzer:
                 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse package.json: {str(e)}")
+            
+        return dependencies
+
+    def _get_python_environment(self) -> List[PackageDependency]:
+        """Get information about the Python environment.
+        
+        Returns:
+            List[PackageDependency]: Python and pip version information
+        """
+        dependencies = []
+        
+        try:
+            # Get Python version
+            python_version = subprocess.run(
+                ["python", "--version"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            version = python_version.stdout.strip().split()[-1]
+            dependencies.append(
+                PackageDependency(
+                    name="python",
+                    version=version,
+                    type="binary"  # Match container SBOM type
+                )
+            )
+            
+            # Get pip version
+            pip_version = subprocess.run(
+                ["pip", "--version"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            version = pip_version.stdout.split()[1]
+            dependencies.append(
+                PackageDependency(
+                    name="pip",
+                    version=version,
+                    type="binary"  # Match container SBOM type
+                )
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to get Python environment info: {str(e)}")
             
         return dependencies
 
