@@ -1,43 +1,53 @@
-"""Basic tests for container SBOM generation."""
+"""Basic synchronous tests for container SBOM generation."""
 
-import pytest
-from fastapi.testclient import TestClient
-
+from pathlib import Path
 from app.services.sbom_generator import SBOMGenerator
+from app.models.sbom import SBOM
 
-def validate_basic_sbom_structure(sbom_data):
-    """Validate minimum required SBOM fields."""
-    assert sbom_data["source_type"] == "container"
-    assert "source_id" in sbom_data
-    assert "components" in sbom_data
-    assert isinstance(sbom_data["components"], list)
-    
-    # Verify at least one component has basic properties
-    if sbom_data["components"]:
-        component = sbom_data["components"][0]
-        assert "name" in component
-        assert "version" in component
-        assert "type" in component
+# Test constants
+PYTHON_IMAGE = "python:3.12-slim"
+
+def validate_basic_sbom_structure(sbom: SBOM):
+    """Validate the basic structure of a generated SBOM."""
+    assert sbom.source_type is not None
+    assert sbom.source_id is not None
+    assert isinstance(sbom.components, list)
+    assert len(sbom.components) > 0
+    assert sbom.metadata is not None
 
 def test_direct_container_sbom_generation():
-    """Test direct SBOM generation from container without API."""
-    image_ref = "nginx:latest"
-    
-    # Create generator and generate SBOM
+    """Test synchronous generation of SBOM from a container image."""
     generator = SBOMGenerator()
-    sbom = generator.generate_container_sbom_sync(image_ref)
     
-    # Convert to dict for validation
+    # Generate SBOM directly
+    sbom = generator.generate_container_sbom_sync(PYTHON_IMAGE)
+    
+    # Convert to dict for easier validation
     sbom_dict = sbom.model_dump()
     
-    # Validate structure
-    validate_basic_sbom_structure(sbom_dict)
-    assert sbom_dict["source_id"] == image_ref
+    # Validate basic structure
+    validate_basic_sbom_structure(sbom)
     
-    # Verify metadata
-    assert "metadata" in sbom_dict
+    # Validate container-specific fields
+    assert sbom_dict["source_type"] == "container"
+    assert sbom_dict["source_id"] == PYTHON_IMAGE
+    
+    # Validate metadata
     assert "image_ref" in sbom_dict["metadata"]
-    assert sbom_dict["metadata"]["image_ref"] == image_ref
+    assert sbom_dict["metadata"]["image_ref"] == PYTHON_IMAGE
+    assert "generator" in sbom_dict["metadata"]
+    assert "generator_version" in sbom_dict["metadata"]
+    
+    # Validate Python components
+    component_names = {comp["name"] for comp in sbom_dict["components"]}
+    assert "python" in component_names, "Python runtime should be present"
+    assert "pip" in component_names, "pip should be present"
+    
+    # Validate component structure
+    python_component = next(c for c in sbom_dict["components"] if c["name"] == "python")
+    assert "version" in python_component
+    assert "type" in python_component
+    assert python_component["type"] == "binary"
 
 def test_container_sbom_endpoint(client):
     """Test container SBOM generation via API endpoint."""

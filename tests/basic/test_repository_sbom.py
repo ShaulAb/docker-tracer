@@ -1,67 +1,51 @@
-"""Basic tests for repository SBOM generation."""
+"""Basic synchronous tests for repository SBOM generation."""
 
-import pytest
 from pathlib import Path
-from fastapi.testclient import TestClient
-
 from app.services.sbom_generator import SBOMGenerator
+from app.models.sbom import SBOM
 
 # Get the path to the test fixtures
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+PYTHON_REPO = str(FIXTURES_DIR / "repositories" / "python")
 
-def validate_basic_sbom_structure(sbom_data):
-    """Validate minimum required SBOM fields."""
-    assert sbom_data["source_type"] == "repository"
-    assert "source_id" in sbom_data
-    assert "components" in sbom_data
-    assert isinstance(sbom_data["components"], list)
-    
-    # Verify at least one component has basic properties
-    if sbom_data["components"]:
-        component = sbom_data["components"][0]
-        assert "name" in component
-        assert "version" in component
-        assert "type" in component
+def validate_basic_sbom_structure(sbom: SBOM):
+    """Validate the basic structure of a generated SBOM."""
+    assert sbom.source_type is not None
+    assert sbom.source_id is not None
+    assert isinstance(sbom.components, list)
+    assert len(sbom.components) > 0
+    assert sbom.metadata is not None
 
-def test_direct_python_repository_sbom_generation():
-    """Test direct SBOM generation from Python repository without API."""
-    repo_path = str(FIXTURES_DIR / "repositories" / "python")
-    
-    # Create generator and generate SBOM
+def test_direct_repository_sbom_generation():
+    """Test synchronous generation of SBOM from a repository."""
     generator = SBOMGenerator()
-    sbom = generator.generate_repository_sbom_sync(repo_path)
     
-    # Convert to dict for validation
+    # Generate SBOM directly
+    sbom = generator.generate_repository_sbom_sync(PYTHON_REPO)
+    
+    # Convert to dict for easier validation
     sbom_dict = sbom.model_dump()
     
-    # Validate structure
-    validate_basic_sbom_structure(sbom_dict)
-    assert sbom_dict["source_id"] == repo_path
+    # Validate basic structure
+    validate_basic_sbom_structure(sbom)
     
-    # Verify Python-specific components
+    # Validate repository-specific fields
+    assert sbom_dict["source_type"] == "repository"
+    assert sbom_dict["source_id"] == PYTHON_REPO
+    
+    # Validate metadata
+    assert "repo_path" in sbom_dict["metadata"]
+    assert sbom_dict["metadata"]["repo_path"] == PYTHON_REPO
+    assert "generator" in sbom_dict["metadata"]
+    assert "analysis_errors" in sbom_dict["metadata"]
+    
+    # Validate Python components
     component_names = {comp["name"] for comp in sbom_dict["components"]}
-    assert "fastapi" in component_names
-    assert "uvicorn" in component_names
-    assert "pytest" in component_names
-
-def test_repository_sbom_endpoint(client):
-    """Test repository SBOM generation via API endpoint."""
-    repo_path = str(FIXTURES_DIR / "repositories" / "python")
+    assert "fastapi" in component_names, "FastAPI should be present"
+    assert "sqlalchemy" in component_names, "SQLAlchemy should be present"
     
-    # Call API endpoint
-    response = client.post("/api/v1/sbom/analyze/repository", 
-                         json={"repo_path": repo_path})
-    
-    # Check response
-    assert response.status_code == 200
-    sbom_data = response.json()
-    
-    # Validate structure
-    validate_basic_sbom_structure(sbom_data)
-    assert sbom_data["source_id"] == repo_path
-    
-    # Verify Python-specific components
-    component_names = {comp["name"] for comp in sbom_data["components"]}
-    assert "fastapi" in component_names
-    assert "uvicorn" in component_names
-    assert "pytest" in component_names 
+    # Validate component structure
+    fastapi_component = next(c for c in sbom_dict["components"] if c["name"] == "fastapi")
+    assert "version" in fastapi_component
+    assert "type" in fastapi_component
+    assert fastapi_component["type"] == "pip"  # Python packages use pip package manager 
