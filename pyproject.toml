@@ -1,27 +1,24 @@
 [project]
-name = "sbomapp"
+name = "sbom-app"
 version = "0.1.0"
-description = "SBOM analysis and matching service"
+description = "SBOM Analysis and Comparison Tool"
 authors = [
-    { name = "Your Name", email = "your.email@example.com" }
+    {name = "Shaul", email = "shaul@example.com"},
 ]
 dependencies = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
     "sqlalchemy>=2.0.25",
-    "asyncpg>=0.29.0",
-    "lib4sbom>=0.8.2",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.25.3",
-    "pytest-cov>=6.0.0",
-    "httpx>=0.28.1",
-    "ipykernel>=6.29.5",
-    "plotly>=6.0.1",
-    "pandas>=2.2.3",
-    "ipywidgets>=8.1.5",
-    "nbformat>=5.10.4",
-    "requests>=2.32.3",
+    "alembic>=1.13.1",
+    "psycopg2-binary>=2.9.9",
+    "python-dotenv>=1.0.0",
+    "gradio>=4.16.0",
+    "docker>=7.0.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.5",
+    "pytest-cov>=4.1.0",
 ]
+requires-python = ">=3.12"
 
 [tool.rye]
 managed = true
@@ -34,7 +31,16 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-filterwarnings = [
-    "ignore::DeprecationWarning:pytest_asyncio.*:",
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow running",
+    "integration: marks tests as integration tests",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
