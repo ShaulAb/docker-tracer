@@ -9,12 +9,21 @@ from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from enum import Enum
+from loguru import logger
+import subprocess
 
 from app.models.sbom import SBOM
 from .exceptions import AnalysisError, InvalidImageError, NormalizationError
 from .types import Component
+from app.config import syft
+from app.services.dockersdk.sdk_client import SDKDockerClient
+from app.services.sbom_generator.models import (
+    ContainerAnalysis,
+    PackageInfo,
+    PackageManager
+)
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(name=__name__)
 
 class CommandType(Enum):
     """Types of Dockerfile commands that create layers."""

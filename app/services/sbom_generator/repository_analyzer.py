@@ -9,6 +9,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from typing import List, Optional, Tuple
 from uuid import uuid4
+from loguru import logger
 
 from lib4sbom.data.file import SBOMFile
 from lib4sbom.sbom import SBOM as Lib4SBOM
@@ -22,7 +23,7 @@ from .types import (
     RepositoryAnalysisResult,
 )
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(name=__name__)
 
 class RepositoryAnalyzer:
     """Analyzes repositories to generate SBOMs."""

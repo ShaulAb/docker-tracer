@@ -11,6 +11,8 @@ import subprocess
 import json
 from typing import List, Optional
 from datetime import datetime, UTC
+from pathlib import Path
+from loguru import logger
 
 from app.models.sbom import SBOM
 from .container_analyzer import ContainerAnalyzer
@@ -22,7 +24,17 @@ from .exceptions import (
     NormalizationError,
 )
 
-logger = logging.getLogger(__name__)
+from app.services.sbom_generator.models import (
+    ContainerAnalysis,
+    DockerfileAnalysis,
+    RepositoryAnalysis,
+    PackageInfo,
+    PackageManager
+)
+
+from app.services.sbom_generator.dockerfile_analyzer import DockerfileAnalyzer
+
+logger = logger.bind(name=__name__)
 
 class SBOMGenerator:
     """Service for generating SBOMs from various sources."""
@@ -163,4 +175,11 @@ __all__ = [
     "InvalidImageError",
     "AnalysisError",
     "NormalizationError",
+    'ContainerAnalysis',
+    'DockerfileAnalysis',
+    'RepositoryAnalysis',
+    'PackageInfo',
+    'PackageManager',
+    'DockerfileAnalyzer',
+    'RepositoryAnalyzer'
 ] 

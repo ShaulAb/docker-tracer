@@ -1,12 +1,10 @@
 """Dockerfile analyzer for SBOM generation and image matching."""
 
-import logging
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 @dataclass
 class DockerInstruction:
