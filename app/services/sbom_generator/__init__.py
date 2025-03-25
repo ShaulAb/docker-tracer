@@ -6,10 +6,9 @@ tool for SBOM generation and provides a normalized format for component data.
 """
 
 import asyncio
-import logging
 import subprocess
 import json
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime, UTC
 from pathlib import Path
 from loguru import logger
@@ -24,15 +23,13 @@ from .exceptions import (
     NormalizationError,
 )
 
-from app.services.sbom_generator.models import (
-    ContainerAnalysis,
+from app.services.dockersdk.models import PackageManager
+from app.services.sbom_generator.dockerfile_analyzer import (
     DockerfileAnalysis,
-    RepositoryAnalysis,
-    PackageInfo,
-    PackageManager
+    DockerfileAnalyzer,
 )
+from app.services.sbom_generator.repository_analyzer import RepositoryAnalysisResult
 
-from app.services.sbom_generator.dockerfile_analyzer import DockerfileAnalyzer
 
 logger = logger.bind(name=__name__)
 
@@ -175,10 +172,8 @@ __all__ = [
     "InvalidImageError",
     "AnalysisError",
     "NormalizationError",
-    'ContainerAnalysis',
     'DockerfileAnalysis',
-    'RepositoryAnalysis',
-    'PackageInfo',
+    'RepositoryAnalysisResult',
     'PackageManager',
     'DockerfileAnalyzer',
     'RepositoryAnalyzer'

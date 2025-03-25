@@ -11,17 +11,17 @@ from dataclasses import dataclass
 from enum import Enum
 from loguru import logger
 import subprocess
+import docker
+from docker.models.containers import Container
+from docker.models.images import Image
 
 from app.models.sbom import SBOM
 from .exceptions import AnalysisError, InvalidImageError, NormalizationError
 from .types import Component
-from app.config import syft
-from app.services.dockersdk.sdk_client import SDKDockerClient
-from app.services.sbom_generator.models import (
-    ContainerAnalysis,
-    PackageInfo,
-    PackageManager
-)
+# from app.services.dockersdk.sdk_client import SDKDockerClient
+# from app.services.sbom_generator.models import (
+#     PackageManager
+# )
 
 logger = logger.bind(name=__name__)
 
@@ -53,11 +53,18 @@ class ImageAnalysis:
     created_at: datetime
 
 class DockerImageInspector:
-    """Analyzes Docker images using Docker API via MCP."""
+    """Analyzes Docker images using Docker SDK."""
 
     def __init__(self):
         """Initialize the Docker image inspector."""
-        self.image_cache = {}  # Cache inspection results
+        try:
+            self.client = docker.from_env()
+            logger.debug("Initialized Docker client")
+        except docker.errors.DockerException as e:
+            logger.error(f"Failed to initialize Docker client: {e}")
+            raise AnalysisError(f"Docker client initialization failed: {e}")
+
+        self.image_cache: Dict[str, Dict] = {}  # Cache inspection results
         self.package_patterns = [
             'apt-get install',
             'apk add',
@@ -86,31 +93,100 @@ class DockerImageInspector:
                 logger.debug(f"Using cached inspection result for {image_ref}")
                 return self.image_cache[image_ref]
 
-            # First try to list containers to see if image exists locally
-            containers = await self._list_containers(filters={"ancestor": image_ref})
-            
-            # Get container info if it exists
-            for container in containers:
-                if container.get("Image") == image_ref:
+            # Run in thread pool since Docker SDK is synchronous
+            def _inspect():
+                try:
+                    # Try to get image
+                    image = self.client.images.get(image_ref)
+                    inspection = self.client.api.inspect_image(image.id)
+                    
+                    # Get history using Docker SDK
+                    history = []
+                    for item in self.client.api.history(image_ref):
+                        history_item = {
+                            "Id": item.get("Id", "<missing>"),
+                            "Created": item.get("Created"),
+                            "CreatedBy": item.get("CreatedBy", ""),
+                            "Size": item.get("Size", 0),
+                            "Comment": item.get("Comment", ""),
+                            "Tags": item.get("Tags", [])
+                        }
+                        history.append(history_item)
+                    
+                    # Extract all relevant fields
+                    config = inspection.get("Config", {})
                     result = {
-                        "id": container.get("Id"),
-                        "created": container.get("Created"),
-                        "image": container.get("Image"),
-                        "labels": container.get("Labels", {}),
-                        "command": container.get("Command"),
-                        "env": container.get("Env", []),
-                        "working_dir": container.get("WorkingDir"),
-                        "entrypoint": container.get("Entrypoint"),
+                        "Id": image.id,
+                        "Created": inspection["Created"],
+                        "Architecture": inspection.get("Architecture"),
+                        "Os": inspection.get("Os"),
+                        "Config": {
+                            "Env": config.get("Env", []),
+                            "Cmd": config.get("Cmd"),
+                            "Entrypoint": config.get("Entrypoint"),
+                            "WorkingDir": config.get("WorkingDir", ""),
+                            "Labels": config.get("Labels", {}),
+                            "ExposedPorts": config.get("ExposedPorts", {}),
+                            "Volumes": config.get("Volumes", {}),
+                        },
+                        "History": history,
+                        "RootFS": inspection.get("RootFS", {}),
                     }
-                    # Cache the result
-                    self.image_cache[image_ref] = result
                     return result
-            
-            return {}
+                except docker.errors.ImageNotFound:
+                    # Try to pull the image
+                    logger.info(f"Image {image_ref} not found locally, attempting to pull")
+                    image = self.client.images.pull(image_ref)
+                    inspection = self.client.api.inspect_image(image.id)
+                    
+                    # Get history using Docker SDK
+                    history = []
+                    for item in self.client.api.history(image_ref):
+                        history_item = {
+                            "Id": item.get("Id", "<missing>"),
+                            "Created": item.get("Created"),
+                            "CreatedBy": item.get("CreatedBy", ""),
+                            "Size": item.get("Size", 0),
+                            "Comment": item.get("Comment", ""),
+                            "Tags": item.get("Tags", [])
+                        }
+                        history.append(history_item)
+                    
+                    # Extract all relevant fields
+                    config = inspection.get("Config", {})
+                    result = {
+                        "Id": image.id,
+                        "Created": inspection["Created"],
+                        "Architecture": inspection.get("Architecture"),
+                        "Os": inspection.get("Os"),
+                        "Config": {
+                            "Env": config.get("Env", []),
+                            "Cmd": config.get("Cmd"),
+                            "Entrypoint": config.get("Entrypoint"),
+                            "WorkingDir": config.get("WorkingDir", ""),
+                            "Labels": config.get("Labels", {}),
+                            "ExposedPorts": config.get("ExposedPorts", {}),
+                            "Volumes": config.get("Volumes", {}),
+                        },
+                        "History": history,
+                        "RootFS": inspection.get("RootFS", {}),
+                    }
+                    return result
 
+            # Run inspection in thread pool
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, _inspect)
+            
+            # Cache the result
+            self.image_cache[image_ref] = result
+            return result
+
+        except docker.errors.DockerException as e:
+            logger.error(f"Failed to inspect image {image_ref}: {e}")
+            raise AnalysisError(f"Image inspection failed: {e}")
         except Exception as e:
-            logger.error(f"Failed to inspect image {image_ref}: {str(e)}")
-            raise AnalysisError(f"Image inspection failed: {str(e)}")
+            logger.error(f"Unexpected error inspecting image {image_ref}: {e}")
+            raise AnalysisError(f"Image inspection failed: {e}")
 
     async def get_image_history(self, image_ref: str) -> List[Dict[str, Any]]:
         """Get the history of all layers in an image.
@@ -125,42 +201,13 @@ class DockerImageInspector:
             AnalysisError: If history retrieval fails
         """
         try:
-            # First ensure we have basic image info
-            image_info = await self.inspect_image(image_ref)
-            if not image_info:
-                logger.warning(f"No image info found for {image_ref}")
-                return []
-
-            # Get container ID if available
-            container_id = image_info.get("id")
-            if not container_id:
-                logger.warning(f"No container ID found for {image_ref}")
-                return []
-
-            # Use MCP to get container details including history
-            try:
-                from mcp_mcp_server_docker_list_containers import mcp_mcp_server_docker_list_containers
-                
-                result = await mcp_mcp_server_docker_list_containers(
-                    all=True,
-                    filters={"id": container_id}
-                )
-                
-                containers = result.get("containers", [])
-                if not containers:
-                    return []
-                    
-                # Extract history from container info
-                container = containers[0]
-                return container.get("history", [])
-
-            except ImportError:
-                logger.warning("MCP Docker module not available, returning empty history")
-                return []
+            # Get image inspection which includes history
+            inspection = await self.inspect_image(image_ref)
+            return inspection.get("history", [])
 
         except Exception as e:
-            logger.error(f"Failed to get image history for {image_ref}: {str(e)}")
-            raise AnalysisError(f"Failed to get image history: {str(e)}")
+            logger.error(f"Failed to get image history for {image_ref}: {e}")
+            raise AnalysisError(f"Failed to get image history: {e}")
 
     async def get_image_config(self, image_ref: str) -> Dict[str, Any]:
         """Get detailed configuration information for an image.
@@ -175,27 +222,21 @@ class DockerImageInspector:
             AnalysisError: If config retrieval fails
         """
         try:
-            # First get basic image info
-            image_info = await self.inspect_image(image_ref)
-            if not image_info:
-                return {}
-
-            # Extract config information
-            config = {
-                "id": image_info.get("id"),
-                "created": image_info.get("created"),
-                "labels": image_info.get("labels", {}),
-                "env": image_info.get("env", []),
-                "cmd": image_info.get("command"),
-                "working_dir": image_info.get("working_dir"),
-                "entrypoint": image_info.get("entrypoint"),
+            # Get image inspection which includes config
+            inspection = await self.inspect_image(image_ref)
+            return {
+                "id": inspection.get("id"),
+                "created": inspection.get("created"),
+                "labels": inspection.get("labels", {}),
+                "env": inspection.get("env", []),
+                "cmd": inspection.get("command"),
+                "working_dir": inspection.get("working_dir"),
+                "entrypoint": inspection.get("entrypoint"),
             }
 
-            return config
-
         except Exception as e:
-            logger.error(f"Failed to get image config for {image_ref}: {str(e)}")
-            raise AnalysisError(f"Failed to get image config: {str(e)}")
+            logger.error(f"Failed to get image config for {image_ref}: {e}")
+            raise AnalysisError(f"Failed to get image config: {e}")
 
     def analyze_layer_commands(self, history: List[Dict[str, Any]]) -> List[LayerInfo]:
         """Analyze commands from layer history and categorize them.
@@ -327,22 +368,32 @@ class DockerImageInspector:
             List[Dict]: List of container information
         """
         try:
-            try:
-                from mcp_mcp_server_docker_list_containers import mcp_mcp_server_docker_list_containers
-                
-                # Convert filters to Docker API format if provided
-                filter_args = {"filters": filters} if filters else {}
-                
-                # List containers including stopped ones
-                result = await mcp_mcp_server_docker_list_containers(all=True, **filter_args)
-                return result.get("containers", [])
+            # Run in thread pool since Docker SDK is synchronous
+            def _list():
+                containers = self.client.containers.list(all=True, filters=filters)
+                return [
+                    {
+                        "Id": c.id,
+                        "Image": c.image.tags[0] if c.image.tags else c.image.id,
+                        "Created": c.attrs["Created"],
+                        "Labels": c.labels,
+                        "Command": c.attrs["Config"]["Cmd"] if "Config" in c.attrs else None,
+                        "Env": c.attrs["Config"]["Env"] if "Config" in c.attrs else [],
+                        "WorkingDir": c.attrs["Config"]["WorkingDir"] if "Config" in c.attrs else "",
+                        "Entrypoint": c.attrs["Config"]["Entrypoint"] if "Config" in c.attrs else None,
+                    }
+                    for c in containers
+                ]
 
-            except ImportError:
-                logger.warning("MCP Docker module not available, returning empty list")
-                return []
+            # Run in thread pool
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, _list)
 
+        except docker.errors.DockerException as e:
+            logger.error(f"Failed to list containers: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Failed to list containers: {str(e)}")
+            logger.error(f"Unexpected error listing containers: {e}")
             return []
 
     def extract_package_commands(self, history: List[Dict]) -> List[str]:
@@ -382,10 +433,10 @@ class ContainerAnalyzer:
 
     def __init__(self):
         """Initialize the container analyzer."""
-        # Check if syft is installed
+        # Check if syft CLI is available
         if not shutil.which("syft"):
-            raise RuntimeError(
-                "Syft CLI not found. Please install it from: "
+            raise EnvironmentError(
+                "Syft CLI not found. Please install syft: "
                 "https://github.com/anchore/syft#installation"
             )
         self.docker_inspector = DockerImageInspector()
