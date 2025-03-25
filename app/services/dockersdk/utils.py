@@ -1,11 +1,122 @@
 """Utility functions for Docker service operations."""
 
 import re
+import shlex
 from typing import Dict, List, Optional, Tuple, Union
 from enum import Enum
 
 from .models import CommandType, PackageManager, PackageCommand
 
+
+# Package manager command patterns
+PACKAGE_PATTERNS = {
+    PackageManager.APT: [
+        # Match apt-get install with flags and multiple packages
+        r'apt-get\s+install\s+(?:-[^\s]*\s+)*(?:--[^\s]*\s+)*([^;|&]+)',
+        r'apt\s+install\s+(?:-[^\s]*\s+)*(?:--[^\s]*\s+)*([^;|&]+)'
+    ],
+    PackageManager.PIP: [
+        # Match pip install with various flags and options
+        r'pip[23]?\s+install\s+(?:--[^\s]*\s+)*([^;|&]+)',
+        r'python[23]?\s+-m\s+pip\s+install\s+(?:--[^\s]*\s+)*([^;|&]+)'
+    ],
+    PackageManager.YUM: [
+        r'yum\s+install\s+(?:-[^\s]*\s+)*(?:--[^\s]*\s+)*([^;|&]+)',
+    ],
+    PackageManager.DNF: [
+        r'dnf\s+install\s+(?:-[^\s]*\s+)*(?:--[^\s]*\s+)*([^;|&]+)',
+    ],
+    PackageManager.APK: [
+        r'apk\s+add\s+(?:-[^\s]*\s+)*(?:--[^\s]*\s+)*([^;|&]+)',
+    ],
+    PackageManager.NPM: [
+        r'npm\s+install\s+(?:--[^\s]*\s+)*([^;|&]+)',
+    ],
+    PackageManager.YARN: [
+        r'yarn\s+add\s+(?:--[^\s]*\s+)*([^;|&]+)',
+    ]
+}
+
+def split_shell_commands(command: str) -> List[str]:
+    """Split a complex shell command into individual commands.
+    
+    Args:
+        command: Complex shell command string
+        
+    Returns:
+        List of individual commands
+    """
+    # Remove shell prefixes and set commands
+    command = re.sub(r'^/bin/sh\s+-c\s+', '', command)
+    command = re.sub(r'^set\s+-[eux]+;\s*', '', command)
+    
+    # Split on common shell operators while preserving quoted strings
+    commands = []
+    current_cmd = []
+    tokens = shlex.split(command)
+    
+    for token in tokens:
+        if token in ['&&', '||', ';']:
+            if current_cmd:
+                commands.append(' '.join(current_cmd))
+                current_cmd = []
+        else:
+            current_cmd.append(token)
+    
+    if current_cmd:
+        commands.append(' '.join(current_cmd))
+    
+    # Further split commands if they contain multiple package operations
+    final_commands = []
+    for cmd in commands:
+        # Split on pipe operators but preserve the command structure
+        parts = re.split(r'\s*\|\s*', cmd)
+        final_commands.extend(parts)
+    
+    return [cmd.strip() for cmd in final_commands if cmd.strip()]
+
+def extract_package_patterns(command: str) -> List[Tuple[PackageManager, str, List[str]]]:
+    """Extract package manager commands and packages using regex patterns.
+    
+    Args:
+        command: Command string to analyze
+        
+    Returns:
+        List of tuples (package_manager, command_type, package_list)
+    """
+    # print(f"\nAnalyzing command: {command}")  # Debug
+    results = []
+    
+    for pkg_mgr, patterns in PACKAGE_PATTERNS.items():
+        for pattern in patterns:
+            if match := re.search(pattern, command):
+                # print(f"Matched pattern for {pkg_mgr}: {pattern}")  # Debug
+                packages_str = match.group(1).strip()
+                # print(f"Found packages string: {packages_str}")  # Debug
+                # Split packages, handling quotes and removing flags
+                raw_packages = shlex.split(packages_str)
+                # print(f"Raw packages: {raw_packages}")  # Debug
+                packages = []
+                for pkg in raw_packages:
+                    # Skip flags and options
+                    if pkg.startswith('-') or pkg.startswith('--'):
+                        continue
+                    # Skip package manager commands that might be in the list
+                    if any(cmd in pkg.lower() for cmd in ['install', 'update', 'remove', 'purge']):
+                        continue
+                    packages.append(pkg)
+                
+                # print(f"Final packages: {packages}")  # Debug
+                if packages:  # Only add if we found actual packages
+                    # Determine command type (install, add, etc.)
+                    cmd_type = 'install'  # Default
+                    if pkg_mgr in [PackageManager.APK, PackageManager.YARN] and 'add' in command:
+                        cmd_type = 'add'
+                    results.append((pkg_mgr, cmd_type, packages))
+    
+    # if not results:
+    #     print("No pattern matched")  # Debug
+    return results
 
 class PackageManagerPatterns:
     """Regular expression patterns for parsing package specifications by package manager."""
@@ -33,8 +144,13 @@ def parse_command_type(command: str) -> CommandType:
         except KeyError:
             return CommandType.UNKNOWN
 
-    # Handle RUN commands
-    if '/bin/sh -c' in command:
+    # Handle RUN commands - more permissive matching
+    if any(pattern in command for pattern in ['/bin/sh -c', 'RUN ', '/bin/bash -c']):
+        return CommandType.RUN
+        
+    # If the command contains package manager commands, treat it as RUN
+    package_managers = ['apt-get', 'apt', 'pip', 'pip3', 'npm', 'yarn', 'yum', 'dnf', 'apk']
+    if any(pm in command.lower() for pm in package_managers):
         return CommandType.RUN
 
     return CommandType.UNKNOWN
@@ -141,7 +257,7 @@ def parse_version_constraint(package: str, package_manager: Optional[PackageMana
         print("Matched DNF pattern in fallback")
         return dnf_match.group(1), dnf_match.group(2)
     
-    print("No pattern matched, returning original package")
+    # print("No pattern matched, returning original package")
     # No version constraint found
     return package, ""
 
@@ -155,6 +271,29 @@ def parse_package_command(command: str) -> Optional[PackageCommand]:
     Returns:
         PackageCommand object if command is a package manager command, None otherwise
     """
+    # Split complex commands into individual ones
+    commands = split_shell_commands(command)
+    
+    for cmd in commands:
+        # Try pattern-based detection first
+        package_matches = extract_package_patterns(cmd)
+        if package_matches:
+            pkg_mgr, cmd_type, packages = package_matches[0]  # Take first match
+            # Parse version constraints for each package
+            version_constraints = {}
+            for pkg in packages:
+                name, version = parse_version_constraint(pkg, pkg_mgr)
+                if version:
+                    version_constraints[name] = version
+            
+            return PackageCommand(
+                manager=pkg_mgr,
+                command=cmd_type,
+                packages=packages,
+                version_constraints=version_constraints
+            )
+    
+    # If no matches found with patterns, try the original exact command matching
     # Normalize command by removing extra whitespace
     command = ' '.join(command.split())
     
@@ -177,9 +316,7 @@ def parse_package_command(command: str) -> Optional[PackageCommand]:
             if (pkg_mgr == PackageManager.APK or pkg_mgr == PackageManager.YARN) and cmd_type == 'add':
                 # Keep 'add' as is for APK and YARN
                 pass
-            elif cmd_type in ['install', 'i']:  # Removed 'add' from this list
-                cmd_type = 'install'
-            elif cmd_type == 'add':  # Handle non-APK/YARN 'add' separately
+            elif cmd_type in ['install', 'i']:
                 cmd_type = 'install'
             elif cmd_type in ['update', 'up']:
                 cmd_type = 'update'
@@ -188,48 +325,24 @@ def parse_package_command(command: str) -> Optional[PackageCommand]:
             else:
                 continue  # Unknown command type
                 
-            # Skip the command and any flags at the start
+            # Skip the command and any flags
             packages_part = ' '.join(parts[1:])
+            packages = shlex.split(packages_part)
             
-            # Split into individual packages, handling quotes
-            packages = []
-            current = []
-            in_quotes = False
-            for char in packages_part:
-                if char == '"' or char == "'":
-                    in_quotes = not in_quotes
-                elif char.isspace() and not in_quotes:
-                    if current:
-                        packages.append(''.join(current))
-                        current = []
-                else:
-                    current.append(char)
-            if current:
-                packages.append(''.join(current))
-            
-            # Parse each package
-            parsed_packages = []
+            # Parse version constraints
             version_constraints = {}
             for pkg in packages:
-                # Skip options/flags
-                if pkg.startswith('-'):
-                    continue
-                    
-                # Parse package name and version using package manager specific patterns
                 name, version = parse_version_constraint(pkg, pkg_mgr)
-                if name:
-                    parsed_packages.append(name)  # Only store name in packages list
-                    if version:  # Store version in constraints dict if present
-                        version_constraints[name] = version
+                if version:
+                    version_constraints[name] = version
             
-            if parsed_packages:
-                return PackageCommand(
-                    manager=pkg_mgr,
-                    command=cmd_type,
-                    packages=parsed_packages,
-                    version_constraints=version_constraints
-                )
-                
+            return PackageCommand(
+                manager=pkg_mgr,
+                command=cmd_type,
+                packages=packages,
+                version_constraints=version_constraints
+            )
+    
     return None
 
 

@@ -19,7 +19,13 @@ from .exceptions import (
     PackageAnalysisError,
 )
 from .models import CommandType, ImageConfig, ImageInfo, Layer, PackageCommand
-from .utils import parse_command_type, parse_package_command, parse_version_constraint
+from .utils import (
+    parse_command_type,
+    parse_package_command,
+    parse_version_constraint,
+    split_shell_commands,
+    extract_package_patterns
+)
 
 
 class SDKDockerClient(DockerClient):
@@ -208,10 +214,12 @@ class SDKDockerClient(DockerClient):
         except DockerError as e:
             raise LayerAnalysisError(image_name, str(e))
 
+        print("\nAnalyzing layers...")  # Debug
         layers = []
         for item in history:
             # Extract command from CreatedBy
             created_by = item.get('CreatedBy', '')
+            # print(f"\nProcessing layer command: {created_by}")  # Debug
             
             # Handle buildkit format
             if created_by.startswith('#(nop)'):
@@ -227,19 +235,46 @@ class SDKDockerClient(DockerClient):
             if created_by.startswith("'") and created_by.endswith("'"):
                 created_by = created_by[1:-1]
 
+            # print(f"Cleaned command: {created_by}")  # Debug
             command_type = parse_command_type(created_by)
+            # print(f"Command type: {command_type}")  # Debug
             
             # Parse package commands if it's a RUN command
             package_commands = []
             if command_type == CommandType.RUN:
-                # Split multiple commands and handle shell operators
-                for cmd in re.split(r'\s*(?:&&|\|\||\||;)\s*', created_by):
-                    cmd = cmd.strip()
-                    if cmd:
+                # Split into individual commands and analyze each
+                split_commands = split_shell_commands(created_by)
+                # print(f"Split commands: {split_commands}")  # Debug
+                for cmd in split_commands:
+                    # print(f"\nAnalyzing command: {cmd}")  # Debug
+                    # Try pattern-based detection first
+                    package_matches = extract_package_patterns(cmd)
+                    # print(f"Package matches: {package_matches}")  # Debug
+                    if package_matches:
+                        for pkg_mgr, cmd_type, packages in package_matches:
+                            # print(f"Found packages for {pkg_mgr}: {packages}")  # Debug
+                            # Parse version constraints for each package
+                            version_constraints = {}
+                            for pkg in packages:
+                                name, version = parse_version_constraint(pkg, pkg_mgr)
+                                if version:
+                                    version_constraints[name] = version
+                            
+                            # Create a new package command
+                            package_commands.append(PackageCommand(
+                                manager=pkg_mgr,
+                                command=cmd_type,
+                                packages=packages,
+                                version_constraints=version_constraints
+                            ))
+                    else:
+                        # Try the original command parsing as fallback
                         parsed = parse_package_command(cmd)
                         if parsed:
+                            # print(f"Found package command via fallback: {parsed}")  # Debug
                             package_commands.append(parsed)
 
+            # print(f"Package commands for layer: {package_commands}")  # Debug
             layers.append(Layer(
                 id=item.get('Id', '<missing>'),
                 created=self._parse_timestamp(item['Created']),
@@ -249,6 +284,9 @@ class SDKDockerClient(DockerClient):
                 package_commands=package_commands
             ))
 
+        print(f"\nTotal layers found: {len(layers)}")  # Debug
+        package_layers = [l for l in layers if l.package_commands]
+        print(f"Layers with package commands: {len(package_layers)}")  # Debug
         return layers
 
     async def get_package_commands(self, image_name: str) -> List[PackageCommand]:
