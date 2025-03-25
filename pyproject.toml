@@ -18,8 +18,11 @@ dependencies = [
     "pytest-asyncio>=0.23.5",
     "pytest-cov>=4.1.0",
     "loguru>=0.7.3",
+    "pygithub>=2.2.0",
+    "plotly>=5.19.0",
 ]
 requires-python = ">=3.12"
+
 
 [tool.rye]
 managed = true
