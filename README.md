@@ -1,86 +1,47 @@
-# Docker Source Matcher
+# Docker (*Fuzzy*) Tracing Tool
 
-A tool for matching Docker images to their source code repositories using SBOM (Software Bill of Materials) analysis.
+A basic tool to provide matching score betwee a Docker image and a Dockerfile / git repository.
 
-## Features
+<br>
 
-- Generate and analyze SBOMs from Docker images
-- Match Docker images to source code repositories
-- Advanced matching algorithm with weighted scoring
-- Interactive visualization of match analysis
-- Layer-by-layer comparison
-- Support for GitHub repositories and local Dockerfiles
-- RESTful API for integration
-- Efficient storage and caching of results
+## Overview
 
-## Visualization Features
+This tool implements a score (probablity) that a Docker image is the outcome of a Dockerfile / git repo.  
+Components:
 
-- Interactive radar chart for match score analysis
-- Real-time score updates and visualization
-- Comprehensive match breakdown display
-- Support for multiple visualization types
-- Detailed layer-by-layer analysis
-- Intuitive and responsive user interface
+1. **Sequential Layer Analysis (40%)**
+   - Matches Dockerfile instructions to image layers
+   - Considers command similarity and layer ordering
+   - Handles BuildKit optimizations and shell variations
+   - Parsing of RUN, COPY, and ADD instructions
 
-## Prerequisites
+2. **Base Image Verification (20%)**
+   - Exact matching including tags
+   - Registry-agnostic comparison
+   - Platform/architecture validation
+   - Support for known image aliases
 
-- Python 3.9 or higher
-- Docker and Docker Compose
-- PostgreSQL 15
-- UV package manager
+3. **Metadata Correlation (20%)**
+   - Label matching with weighted importance
+   - Environment variable verification
+   - Port and volume definition validation
+   - Working directory analysis
 
-## Development Setup
+4. **Build Context Analysis (20%)**
+   - Path pattern matching for COPY/ADD instructions
+   - File and directory structure validation
+   - Extension and content type verification
+   - Multi-stage build awareness
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd docker-source-matcher
-   ```
+<br>
 
-2. Set up the Python environment:
-   ```bash
-   uv venv
-   source .venv/bin/activate  # On Unix-like systems
-   # or
-   .venv\Scripts\activate  # On Windows
-   ```
+## Match Quality Scoring
 
-3. Install dependencies:
-   ```bash
-   uv pip install -e ".[dev]"
-   ```
+Score interpretation:
 
-4. Start the development database:
-   ```bash
-   docker-compose up -d
-   ```
+- **0.9 - 1.0**: Excellent match (Very high confidence)
+- **0.8 - 0.9**: Good match (High confidence)
+- **0.6 - 0.8**: Fair match (Possible derivative)
+- **< 0.6**: Poor match (Likely unrelated)
 
-5. Create a `.env` file:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
-
-6. Run the development server:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-
-The API will be available at `http://localhost:8000`
-
-## API Documentation
-
-Once the server is running, you can access:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-## Testing
-
-Run tests with pytest:
-```bash
-pytest
-```
-
-## License
-
-[Your chosen license] 
+<br>
