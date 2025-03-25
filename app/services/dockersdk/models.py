@@ -86,4 +86,60 @@ class ImageInfo:
     size: int
     layers: List[Layer]
     config: ImageConfig
-    base_image: Optional[str] 
+    base_image: Optional[str]
+
+
+@dataclass
+class LayerMatch:
+    """Represents a match between a Dockerfile instruction and an image layer."""
+    
+    dockerfile_instruction: 'DockerInstruction'  # Forward reference
+    layer_info: Layer
+    match_score: float
+    match_type: str  # 'exact', 'partial', 'none'
+    details: Dict[str, any]  # Additional match details
+
+
+@dataclass
+class DockerfileMatch:
+    """Results of matching a Dockerfile against a Docker image."""
+    
+    overall_score: float
+    base_image_score: float
+    layer_score: float
+    metadata_score: float
+    context_score: float
+    matched_layers: List[LayerMatch]
+    metadata: Dict[str, any]  # Additional matching metadata
+
+    @property
+    def is_likely_match(self) -> bool:
+        """Check if the Dockerfile likely produced this image."""
+        return self.overall_score >= 0.8  # 80% confidence threshold
+
+    @property
+    def match_quality(self) -> str:
+        """Get a qualitative description of the match quality."""
+        if self.overall_score >= 0.9:
+            return "Excellent"
+        elif self.overall_score >= 0.8:
+            return "Good"
+        elif self.overall_score >= 0.6:
+            return "Fair"
+        elif self.overall_score >= 0.4:
+            return "Poor"
+        else:
+            return "Very Poor"
+
+    def get_mismatch_reasons(self) -> List[str]:
+        """Get list of reasons for mismatches."""
+        reasons = []
+        if self.base_image_score < 0.8:
+            reasons.append("Base image mismatch")
+        if self.layer_score < 0.7:
+            reasons.append("Layer command mismatches")
+        if self.metadata_score < 0.7:
+            reasons.append("Metadata differences")
+        if self.context_score < 0.7:
+            reasons.append("Build context differences")
+        return reasons 
